@@ -30,3 +30,6 @@ data_test/
 # Temporary files
 *.tmp
 *.log
+
+# Python packaging artifacts
+*.egg-info/
