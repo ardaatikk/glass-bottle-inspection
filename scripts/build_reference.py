@@ -9,11 +9,6 @@ from bottle_inspection.inspection import (
     inspect_image,
 )
 
-from bottle_inspection.inspection import (
-    SUPPORTED_IMAGE_EXTENSIONS,
-    inspect_image,
-)
-
 from bottle_inspection.reference import (
     interpolate_width_profile,
 )
