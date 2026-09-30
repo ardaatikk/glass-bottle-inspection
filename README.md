@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/ardaatikk/glass-bottle-inspection/actions/workflows/tests.yml/badge.svg)](https://github.com/ardaatikk/glass-bottle-inspection/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 An explainable computer vision pipeline...
 
