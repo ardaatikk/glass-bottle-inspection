@@ -24,6 +24,9 @@ data/images/
 data/masks/
 data/metadata.csv
 
+# Temporary test datasets
+data_test/
+
 # Temporary files
 *.tmp
 *.log

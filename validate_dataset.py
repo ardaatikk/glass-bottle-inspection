@@ -1,758 +1,1419 @@
+import argparse
+import csv
+import sys
 from pathlib import Path
 
 import cv2
-import pandas as pd
 import numpy as np
 
 
-DATA_DIR = Path("data")
+# ============================================================
+# Configuration
+# ============================================================
 
-IMAGES_DIR = DATA_DIR / "images"
-MASKS_DIR = DATA_DIR / "masks"
+DEFAULT_DATA_DIR = Path("data")
 
-METADATA_PATH = DATA_DIR / "metadata.csv"
-GEOMETRY_TOLERANCE_PX = 2.1
+GEOMETRY_TOLERANCE = 2.1
+HEIGHT_TOLERANCE = 1
+LEAN_TOP_REGION = (0.05, 0.15)
+LEAN_BOTTOM_REGION = (0.85, 0.95)
 
-def get_sample_paths(
-    filename: str,
-    defect_type: str,
-) -> tuple[Path, Path]:
+DEFECT_TYPES = (
+    "normal",
+    "bulge",
+    "shrink",
+    "lean",
+    "height",
+    "neck",
+)
 
-    stem = Path(filename).stem
+REQUIRED_METADATA_FIELDS = (
+    "filename",
+    "defect_type",
+    "body_width",
+    "neck_width",
+    "bottle_height",
+    "magnitude",
+    "center",
+    "sigma",
+    "lean_shift",
+    "height_change",
+)
 
-    mask_filename = (
-        f"{stem}_mask.png"
+
+# ============================================================
+# Metadata loading
+# ============================================================
+
+def load_metadata(
+    metadata_path: Path,
+) -> list[dict]:
+    """
+    Load dataset metadata from CSV.
+    """
+
+    metadata_path = Path(
+        metadata_path
     )
 
-    if defect_type == "normal":
-
-        image_path = (
-            IMAGES_DIR
-            / "normal"
-            / filename
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"Metadata file does not exist: "
+            f"{metadata_path}"
         )
 
-        mask_path = (
-            MASKS_DIR
-            / "normal"
-            / mask_filename
+    if not metadata_path.is_file():
+        raise ValueError(
+            f"Metadata path is not a file: "
+            f"{metadata_path}"
         )
 
-    else:
+    with metadata_path.open(
+        "r",
+        newline="",
+        encoding="utf-8",
+    ) as csv_file:
 
-        image_path = (
-            IMAGES_DIR
-            / "defective"
-            / defect_type
-            / filename
+        reader = csv.DictReader(
+            csv_file
         )
 
-        mask_path = (
-            MASKS_DIR
-            / "defective"
-            / defect_type
-            / mask_filename
+        if reader.fieldnames is None:
+            raise ValueError(
+                "Metadata file has no header."
+            )
+
+        missing_fields = (
+            set(REQUIRED_METADATA_FIELDS)
+            - set(reader.fieldnames)
         )
 
-    return image_path, mask_path
+        if missing_fields:
+            raise ValueError(
+                "Metadata is missing required fields: "
+                + ", ".join(
+                    sorted(missing_fields)
+                )
+            )
 
-def is_binary_mask(
-    mask: np.ndarray,
-) -> bool:
+        rows = list(
+            reader
+        )
 
-    unique_values = np.unique(mask)
+    if not rows:
+        raise ValueError(
+            "Metadata file contains no samples."
+        )
 
-    return set(unique_values).issubset(
-        {0, 255}
-    )
-    
-def measure_mask(
-    mask: np.ndarray,
+    return rows
+
+
+# ============================================================
+# Metadata parsing
+# ============================================================
+
+def parse_metadata_row(
+    row: dict,
 ) -> dict:
-
-    y_coordinates, x_coordinates = np.where(
-        mask == 255
-    )
-
-    if len(x_coordinates) == 0:
-        return {
-            "empty": True,
-            "width": 0,
-            "height": 0,
-            "top": None,
-            "bottom": None,
-            "left": None,
-            "right": None,
-        }
-
-    left = int(x_coordinates.min())
-    right = int(x_coordinates.max())
-
-    top = int(y_coordinates.min())
-    bottom = int(y_coordinates.max())
-
-    width = right - left + 1
-    height = bottom - top + 1
-
-    return {
-        "empty": False,
-        "width": width,
-        "height": height,
-        "top": top,
-        "bottom": bottom,
-        "left": left,
-        "right": right,
-    }
-
-def measure_width_at_y(
-    mask: np.ndarray,
-    y: int,
-) -> int | None:
     """
-    Mask üzerinde belirli bir y satırındaki
-    şişe genişliğini ölçer.
+    Convert CSV string values to their expected
+    Python numeric types.
     """
-
-    if y < 0 or y >= mask.shape[0]:
-        return None
-
-    x_coordinates = np.where(
-        mask[y] == 255
-    )[0]
-
-    if len(x_coordinates) == 0:
-        return None
-
-    left = int(x_coordinates.min())
-    right = int(x_coordinates.max())
-
-    return right - left + 1
-
-def measure_center_at_y(
-    mask: np.ndarray,
-    y: int,
-) -> float | None:
-    """
-    Mask üzerinde belirli bir y satırındaki
-    şişe merkezini ölçer.
-    """
-
-    if y < 0 or y >= mask.shape[0]:
-        return None
-
-    x_coordinates = np.where(
-        mask[y] == 255
-    )[0]
-
-    if len(x_coordinates) == 0:
-        return None
-
-    left = float(x_coordinates.min())
-    right = float(x_coordinates.max())
-
-    return (
-        left + right
-    ) / 2.0
-
-def validate_normal_body_width(
-    mask: np.ndarray,
-    row: pd.Series,
-) -> tuple[bool, float, float]:
-
-    measurement = measure_mask(mask)
-
-    top = measurement["top"]
-    bottom = measurement["bottom"]
-
-    # Gövdenin alt tarafında güvenli bir nokta.
-    y_normalized = 0.80
-
-    y = int(
-        top
-        + y_normalized
-        * (bottom - top)
-    )
-
-    measured_width = measure_width_at_y(
-        mask,
-        y,
-    )
-
-    expected_width = float(
-        row["body_width"]
-    )
-
-    if measured_width is None:
-        return (
-            False,
-            expected_width,
-            float("nan"),
-        )
-
-    error = abs(
-        measured_width
-        - expected_width
-    )
-
-    return (
-        error <= GEOMETRY_TOLERANCE_PX,
-        expected_width,
-        float(measured_width),
-    )
-
-def validate_local_width_defect(
-    mask: np.ndarray,
-    row: pd.Series,
-) -> tuple[bool, float, float]:
-
-    measurement = measure_mask(mask)
-
-    top = measurement["top"]
-    bottom = measurement["bottom"]
-
-    defect_center = float(
-        row["center"]
-    )
-
-    y = int(
-        top
-        + defect_center
-        * (bottom - top)
-    )
-
-    measured_width = measure_width_at_y(
-        mask,
-        y,
-    )
-
-    body_width = float(
-        row["body_width"]
-    )
-
-    magnitude = float(
-        row["magnitude"]
-    )
 
     defect_type = row[
         "defect_type"
     ]
 
-    if defect_type == "bulge":
-
-        expected_width = (
-            body_width
-            + magnitude
+    if defect_type not in DEFECT_TYPES:
+        raise ValueError(
+            f"Unsupported defect type: "
+            f"{defect_type}"
         )
 
-    elif defect_type == "shrink":
+    return {
+        "filename": row[
+            "filename"
+        ],
 
-        expected_width = (
-            body_width
-            - magnitude
+        "defect_type": defect_type,
+
+        "body_width": float(
+            row["body_width"]
+        ),
+
+        "neck_width": float(
+            row["neck_width"]
+        ),
+
+        "bottle_height": int(
+            float(
+                row["bottle_height"]
+            )
+        ),
+
+        "magnitude": float(
+            row["magnitude"]
+        ),
+
+        "center": float(
+            row["center"]
+        ),
+
+        "sigma": float(
+            row["sigma"]
+        ),
+
+        "lean_shift": float(
+            row["lean_shift"]
+        ),
+
+        "height_change": int(
+            float(
+                row["height_change"]
+            )
+        ),
+    }
+
+
+# ============================================================
+# Dataset path resolution
+# ============================================================
+
+def get_sample_paths(
+    images_dir: Path,
+    masks_dir: Path,
+    metadata: dict,
+) -> tuple[Path, Path]:
+    """
+    Resolve image and mask paths for a metadata row.
+    """
+
+    filename = metadata[
+        "filename"
+    ]
+
+    defect_type = metadata[
+        "defect_type"
+    ]
+
+    image_stem = Path(
+        filename
+    ).stem
+
+    mask_filename = (
+        f"{image_stem}_mask.png"
+    )
+
+    if defect_type == "normal":
+
+        image_path = (
+            images_dir
+            / "normal"
+            / filename
+        )
+
+        mask_path = (
+            masks_dir
+            / "normal"
+            / mask_filename
         )
 
     else:
-        raise ValueError(
-            "This validator only supports "
-            "bulge and shrink."
+
+        image_path = (
+            images_dir
+            / "defective"
+            / defect_type
+            / filename
         )
 
-    if measured_width is None:
-
-        return (
-            False,
-            expected_width,
-            float("nan"),
+        mask_path = (
+            masks_dir
+            / "defective"
+            / defect_type
+            / mask_filename
         )
-
-    error = abs(
-        measured_width
-        - expected_width
-    )
 
     return (
-        error <= GEOMETRY_TOLERANCE_PX,
-        expected_width,
-        float(measured_width),
+        image_path,
+        mask_path,
     )
 
-def validate_neck_width(
-    mask: np.ndarray,
-    row: pd.Series,
-) -> tuple[bool, float, float]:
 
-    measurement = measure_mask(mask)
+# ============================================================
+# File validation
+# ============================================================
 
-    top = measurement["top"]
-    bottom = measurement["bottom"]
-
-    # Boynun ortalarından ölçelim.
-    y_normalized = 0.10
-
-    y = int(
-        top
-        + y_normalized
-        * (bottom - top)
-    )
-
-    measured_width = measure_width_at_y(
-        mask,
-        y,
-    )
-
-    expected_width = (
-        float(row["neck_width"])
-        + float(row["magnitude"])
-    )
-
-    if measured_width is None:
-
-        return (
-            False,
-            expected_width,
-            float("nan"),
-        )
-
-    error = abs(
-        measured_width
-        - expected_width
-    )
-
-    return (
-        error <= GEOMETRY_TOLERANCE_PX,
-        expected_width,
-        float(measured_width),
-    )
-
-def validate_lean(
-    mask: np.ndarray,
-    row: pd.Series,
-) -> tuple[bool, float, float]:
-
-    measurement = measure_mask(mask)
-
-    top = measurement["top"]
-    bottom = measurement["bottom"]
-
-    top_ratio = 0.10
-    bottom_ratio = 0.90
-
-    top_y = int(
-        top
-        + top_ratio
-        * (bottom - top)
-    )
-
-    bottom_y = int(
-        top
-        + bottom_ratio
-        * (bottom - top)
-    )
-
-    top_center = measure_center_at_y(
-        mask,
-        top_y,
-    )
-
-    bottom_center = measure_center_at_y(
-        mask,
-        bottom_y,
-    )
-
-    if (
-        top_center is None
-        or bottom_center is None
-    ):
-
-        return (
-            False,
-            float(row["lean_shift"]),
-            float("nan"),
-        )
-
-    measured_shift = (
-        top_center
-        - bottom_center
-    )
-
-    # Generator:
-    # shift(y) = lean_shift * (1 - y)
-    #
-    # y=0.10 ve y=0.90 arasındaki fark:
-    # 0.90 - 0.10 = 0.80
-    expected_shift = (
-        float(row["lean_shift"])
-        * (
-            bottom_ratio
-            - top_ratio
-        )
-    )
-
-    error = abs(
-        measured_shift
-        - expected_shift
-    )
-
-    return (
-        error <= GEOMETRY_TOLERANCE_PX,
-        expected_shift,
-        measured_shift,
-    )
-        
-def get_expected_height(
-    row: pd.Series,
-) -> int:
-
-    bottle_height = int(
-        row["bottle_height"]
-    )
-
-    height_change = int(
-        row["height_change"]
-    )
-
-    if row["defect_type"] == "height":
-        return (
-            bottle_height
-            + height_change
-            + 1
-        )
-
-    return bottle_height + 1
-
-def validate_sample(
-    row: pd.Series,
-) -> dict:
-
-    filename = row["filename"]
-    defect_type = row["defect_type"]
-
-    errors = []
-
-    # Bu değişkenleri baştan tanımlıyoruz.
-    # Height örneklerinde ayrıca geometry validation
-    # yapılmadığı için None olarak kalabilirler.
-    expected_geometry = None
-    measured_geometry = None
-
-    image_path, mask_path = get_sample_paths(
-        filename,
-        defect_type,
-    )
-
-    # --------------------
-    # File existence
-    # --------------------
-
-    if not image_path.exists():
-        errors.append(
-            "image_missing"
-        )
-
-    if not mask_path.exists():
-        errors.append(
-            "mask_missing"
-        )
-
-    if errors:
-        return {
-            "filename": filename,
-            "defect_type": defect_type,
-            "status": "FAIL",
-            "errors": ", ".join(errors),
-            "expected_height": None,
-            "measured_height": None,
-            "expected_geometry": None,
-            "measured_geometry": None,
-        }
-
-    # --------------------
-    # Read files
-    # --------------------
-
-    image = cv2.imread(
-        str(image_path),
-        cv2.IMREAD_GRAYSCALE,
-    )
+def load_mask(
+    mask_path: Path,
+) -> np.ndarray:
+    """
+    Load a ground-truth mask as grayscale.
+    """
 
     mask = cv2.imread(
         str(mask_path),
         cv2.IMREAD_GRAYSCALE,
     )
 
-    if image is None:
-        errors.append(
-            "image_unreadable"
+    if mask is None:
+        raise RuntimeError(
+            f"Mask could not be loaded: "
+            f"{mask_path}"
         )
 
-    if mask is None:
+    return mask
+
+
+def validate_binary_mask(
+    mask: np.ndarray,
+) -> bool:
+    """
+    Check whether a mask contains only binary
+    pixel values 0 and 255.
+    """
+
+    unique_values = np.unique(
+        mask
+    )
+
+    return bool(
+        np.all(
+            np.isin(
+                unique_values,
+                [0, 255],
+            )
+        )
+    )
+
+
+# ============================================================
+# Mask geometry
+# ============================================================
+
+def get_mask_bounds(
+    mask: np.ndarray,
+) -> dict:
+    """
+    Extract bottle bounding geometry from a
+    ground-truth mask.
+    """
+
+    y_coordinates, x_coordinates = np.where(
+        mask == 255
+    )
+
+    if len(x_coordinates) == 0:
+        raise RuntimeError(
+            "Mask contains no bottle pixels."
+        )
+
+    left = int(
+        x_coordinates.min()
+    )
+
+    right = int(
+        x_coordinates.max()
+    )
+
+    top = int(
+        y_coordinates.min()
+    )
+
+    bottom = int(
+        y_coordinates.max()
+    )
+
+    width = (
+        right - left + 1
+    )
+
+    height = (
+        bottom - top + 1
+    )
+
+    return {
+        "left": left,
+        "right": right,
+        "top": top,
+        "bottom": bottom,
+        "width": width,
+        "height": height,
+    }
+
+
+def calculate_width_profile(
+    mask: np.ndarray,
+    top: int,
+    bottom: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calculate bottle width at every valid row
+    of a ground-truth mask.
+    """
+
+    y_values = []
+    widths = []
+
+    for y in range(
+        top,
+        bottom + 1,
+    ):
+
+        x_coordinates = np.where(
+            mask[y] == 255
+        )[0]
+
+        if len(x_coordinates) == 0:
+            continue
+
+        width = (
+            int(x_coordinates.max())
+            - int(x_coordinates.min())
+            + 1
+        )
+
+        y_values.append(
+            y
+        )
+
+        widths.append(
+            width
+        )
+
+    if not y_values:
+        raise RuntimeError(
+            "Mask width profile could not "
+            "be calculated."
+        )
+
+    return (
+        np.asarray(
+            y_values,
+            dtype=np.int32,
+        ),
+        np.asarray(
+            widths,
+            dtype=np.float64,
+        ),
+    )
+
+
+def calculate_center_profile(
+    mask: np.ndarray,
+    top: int,
+    bottom: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calculate bottle center at every valid row
+    of a ground-truth mask.
+    """
+
+    y_values = []
+    centers = []
+
+    for y in range(
+        top,
+        bottom + 1,
+    ):
+
+        x_coordinates = np.where(
+            mask[y] == 255
+        )[0]
+
+        if len(x_coordinates) == 0:
+            continue
+
+        left = float(
+            x_coordinates.min()
+        )
+
+        right = float(
+            x_coordinates.max()
+        )
+
+        center = (
+            left + right
+        ) / 2.0
+
+        y_values.append(
+            y
+        )
+
+        centers.append(
+            center
+        )
+
+    if not y_values:
+        raise RuntimeError(
+            "Mask center profile could not "
+            "be calculated."
+        )
+
+    return (
+        np.asarray(
+            y_values,
+            dtype=np.int32,
+        ),
+        np.asarray(
+            centers,
+            dtype=np.float64,
+        ),
+    )
+
+
+def normalize_vertical_coordinates(
+    y_values: np.ndarray,
+    top: int,
+    bottom: int,
+) -> np.ndarray:
+    """
+    Normalize bottle vertical coordinates.
+
+    0.0 = bottle top
+    1.0 = bottle bottom
+    """
+
+    bottle_height = (
+        bottom - top
+    )
+
+    if bottle_height <= 0:
+        raise RuntimeError(
+            "Invalid bottle height."
+        )
+
+    return (
+        (y_values - top)
+        / bottle_height
+    )
+
+
+# ============================================================
+# Geometry measurements
+# ============================================================
+
+def measure_body_width(
+    y_values: np.ndarray,
+    widths: np.ndarray,
+    top: int,
+    bottom: int,
+) -> float:
+    """
+    Measure median width in the stable body region.
+    """
+
+    normalized_y = (
+        normalize_vertical_coordinates(
+            y_values,
+            top,
+            bottom,
+        )
+    )
+
+    body_region = (
+        (normalized_y >= 0.65)
+        & (normalized_y <= 0.90)
+    )
+
+    body_widths = widths[
+        body_region
+    ]
+
+    if len(body_widths) == 0:
+        raise RuntimeError(
+            "Body region could not be measured."
+        )
+
+    return float(
+        np.median(
+            body_widths
+        )
+    )
+
+
+def measure_neck_width(
+    y_values: np.ndarray,
+    widths: np.ndarray,
+    top: int,
+    bottom: int,
+) -> float:
+    """
+    Measure median width in the neck region.
+    """
+
+    normalized_y = (
+        normalize_vertical_coordinates(
+            y_values,
+            top,
+            bottom,
+        )
+    )
+
+    neck_region = (
+        (normalized_y >= 0.05)
+        & (normalized_y <= 0.15)
+    )
+
+    neck_widths = widths[
+        neck_region
+    ]
+
+    if len(neck_widths) == 0:
+        raise RuntimeError(
+            "Neck region could not be measured."
+        )
+
+    return float(
+        np.median(
+            neck_widths
+        )
+    )
+
+
+def measure_lean(
+    y_values: np.ndarray,
+    centers: np.ndarray,
+    top: int,
+    bottom: int,
+) -> float:
+    """
+    Measure horizontal displacement between the
+    upper and lower bottle regions.
+    """
+
+    normalized_y = (
+        normalize_vertical_coordinates(
+            y_values,
+            top,
+            bottom,
+        )
+    )
+
+    top_region = (
+        (normalized_y >= LEAN_TOP_REGION[0])
+        & (normalized_y <= LEAN_TOP_REGION[1])
+    )
+
+    bottom_region = (
+        (normalized_y >= LEAN_BOTTOM_REGION[0])
+        & (normalized_y <= LEAN_BOTTOM_REGION[1])
+    )
+
+    top_centers = centers[
+        top_region
+    ]
+
+    bottom_centers = centers[
+        bottom_region
+    ]
+
+    if (
+        len(top_centers) == 0
+        or len(bottom_centers) == 0
+    ):
+        raise RuntimeError(
+            "Lean could not be measured."
+        )
+
+    return float(
+        np.median(top_centers)
+        - np.median(bottom_centers)
+    )
+
+
+def measure_mask_geometry(
+    mask: np.ndarray,
+) -> dict:
+    """
+    Measure geometry directly from a ground-truth
+    bottle mask.
+    """
+
+    bounds = get_mask_bounds(
+        mask
+    )
+
+    (
+        width_y_values,
+        width_profile,
+    ) = calculate_width_profile(
+        mask,
+        bounds["top"],
+        bounds["bottom"],
+    )
+
+    (
+        center_y_values,
+        center_profile,
+    ) = calculate_center_profile(
+        mask,
+        bounds["top"],
+        bounds["bottom"],
+    )
+
+    body_width = measure_body_width(
+        width_y_values,
+        width_profile,
+        bounds["top"],
+        bounds["bottom"],
+    )
+
+    neck_width = measure_neck_width(
+        width_y_values,
+        width_profile,
+        bounds["top"],
+        bounds["bottom"],
+    )
+
+    lean = measure_lean(
+        center_y_values,
+        center_profile,
+        bounds["top"],
+        bounds["bottom"],
+    )
+
+    return {
+        "height": bounds[
+            "height"
+        ],
+        "bounding_width": bounds[
+            "width"
+        ],
+        "body_width": body_width,
+        "neck_width": neck_width,
+        "lean": lean,
+        "width_y_values": width_y_values,
+        "width_profile": width_profile,
+    }
+
+
+# ============================================================
+# Expected geometry
+# ============================================================
+
+def get_expected_height(
+    metadata: dict,
+) -> int:
+    """
+    Return expected bottle height from metadata.
+    """
+
+    expected_height = metadata[
+        "bottle_height"
+    ]
+
+    if (
+        metadata["defect_type"]
+        == "height"
+    ):
+        expected_height += metadata[
+            "height_change"
+        ]
+
+    # Generated masks include both top and bottom rows.
+    return expected_height + 1
+
+
+def get_expected_geometry(
+    metadata: dict,
+) -> float | None:
+    """
+    Return the primary expected geometry value
+    for the sample's defect type.
+
+    This value is used as a compact validation
+    summary and for defect-specific checks.
+    """
+
+    defect_type = metadata[
+        "defect_type"
+    ]
+
+    if defect_type == "normal":
+        return metadata[
+            "body_width"
+        ]
+
+    if defect_type == "bulge":
+        return (
+            metadata["body_width"]
+            + metadata["magnitude"]
+        )
+
+    if defect_type == "shrink":
+        return (
+            metadata["body_width"]
+            - metadata["magnitude"]
+        )
+
+    if defect_type == "lean":
+
+        top_center = (
+            LEAN_TOP_REGION[0]
+            + LEAN_TOP_REGION[1]
+        ) / 2.0
+
+        bottom_center = (
+            LEAN_BOTTOM_REGION[0]
+            + LEAN_BOTTOM_REGION[1]
+        ) / 2.0
+
+        expected_lean_factor = (
+            bottom_center
+            - top_center
+        )
+
+        return (
+            metadata["lean_shift"]
+            * expected_lean_factor
+        )
+
+    if defect_type == "height":
+        return float(
+            get_expected_height(
+                metadata
+            )
+        )
+
+    if defect_type == "neck":
+        return (
+            metadata["neck_width"]
+            + metadata["magnitude"]
+        )
+
+    return None
+
+
+# ============================================================
+# Defect-specific geometry
+# ============================================================
+
+def measure_local_deformation(
+    metadata: dict,
+    measurements: dict,
+) -> float:
+    """
+    Measure local width around the configured
+    bulge/shrink center.
+    """
+
+    y_values = measurements[
+        "width_y_values"
+    ]
+
+    widths = measurements[
+        "width_profile"
+    ]
+
+    height = measurements[
+        "height"
+    ]
+
+    if height <= 1:
+        raise RuntimeError(
+            "Invalid bottle height."
+        )
+
+    top = int(
+        y_values.min()
+    )
+
+    normalized_y = (
+        (y_values - top)
+        / (height - 1)
+    )
+
+    center = metadata[
+        "center"
+    ]
+
+    center_index = int(
+        np.argmin(
+            np.abs(
+                normalized_y - center
+            )
+        )
+    )
+
+    return float(
+        widths[
+            center_index
+        ]
+    )
+
+
+# ============================================================
+# Sample validation
+# ============================================================
+
+def validate_sample(
+    metadata: dict,
+    image_path: Path,
+    mask_path: Path,
+) -> dict:
+    """
+    Validate one generated sample against its
+    metadata and ground-truth mask.
+    """
+
+    errors = []
+
+    if not image_path.exists():
         errors.append(
-            "mask_unreadable"
+            "missing_image"
+        )
+
+    if not mask_path.exists():
+        errors.append(
+            "missing_mask"
         )
 
     if errors:
         return {
-            "filename": filename,
-            "defect_type": defect_type,
-            "status": "FAIL",
-            "errors": ", ".join(errors),
+            "filename": metadata[
+                "filename"
+            ],
+            "passed": False,
+            "errors": ",".join(
+                errors
+            ),
             "expected_height": None,
             "measured_height": None,
             "expected_geometry": None,
             "measured_geometry": None,
         }
 
-    # --------------------
-    # Binary mask
-    # --------------------
-
-    if not is_binary_mask(mask):
-        errors.append(
-            "mask_not_binary"
-        )
-
-    # --------------------
-    # Measure mask
-    # --------------------
-
-    measurement = measure_mask(
-        mask
+    image = cv2.imread(
+        str(image_path),
+        cv2.IMREAD_GRAYSCALE,
     )
 
-    if measurement["empty"]:
+    if image is None:
         errors.append(
-            "empty_mask"
+            "invalid_image"
         )
 
-    # --------------------
-    # Image boundaries
-    # --------------------
-
-    if not measurement["empty"]:
-
-        image_height, image_width = (
-            image.shape
+    try:
+        mask = load_mask(
+            mask_path
         )
 
-        if measurement["left"] <= 0:
-            errors.append(
-                "touches_left_border"
-            )
+    except RuntimeError:
+        errors.append(
+            "invalid_mask"
+        )
 
-        if measurement["right"] >= (
-            image_width - 1
-        ):
-            errors.append(
-                "touches_right_border"
-            )
+        return {
+            "filename": metadata[
+                "filename"
+            ],
+            "passed": False,
+            "errors": ",".join(
+                errors
+            ),
+            "expected_height": None,
+            "measured_height": None,
+            "expected_geometry": None,
+            "measured_geometry": None,
+        }
 
-        if measurement["top"] <= 0:
-            errors.append(
-                "touches_top_border"
-            )
+    if not validate_binary_mask(
+        mask
+    ):
+        errors.append(
+            "non_binary_mask"
+        )
 
-        if measurement["bottom"] >= (
-            image_height - 1
-        ):
-            errors.append(
-                "touches_bottom_border"
+    try:
+        measurements = (
+            measure_mask_geometry(
+                mask
             )
+        )
 
-    # --------------------
-    # Height validation
-    # --------------------
+    except RuntimeError:
+        errors.append(
+            "geometry_measurement_failed"
+        )
+
+        return {
+            "filename": metadata[
+                "filename"
+            ],
+            "passed": False,
+            "errors": ",".join(
+                errors
+            ),
+            "expected_height": None,
+            "measured_height": None,
+            "expected_geometry": None,
+            "measured_geometry": None,
+        }
 
     expected_height = (
-        get_expected_height(row)
+        get_expected_height(
+            metadata
+        )
     )
 
-    measured_height = (
-        measurement["height"]
-    )
+    measured_height = measurements[
+        "height"
+    ]
 
     if (
-        not measurement["empty"]
-        and measured_height
-        != expected_height
+        abs(
+            measured_height
+            - expected_height
+        )
+        > HEIGHT_TOLERANCE
     ):
         errors.append(
             "height_mismatch"
         )
 
-    # --------------------
-    # Geometry validation
-    # --------------------
+    defect_type = metadata[
+        "defect_type"
+    ]
 
-    if not measurement["empty"]:
-
-        if defect_type == "normal":
-
-            (
-                geometry_ok,
-                expected_geometry,
-                measured_geometry,
-            ) = validate_normal_body_width(
-                mask,
-                row,
-            )
-
-            if not geometry_ok:
-                errors.append(
-                    "body_width_mismatch"
-                )
-
-        elif defect_type in {
-            "bulge",
-            "shrink",
-        }:
-
-            (
-                geometry_ok,
-                expected_geometry,
-                measured_geometry,
-            ) = validate_local_width_defect(
-                mask,
-                row,
-            )
-
-            if not geometry_ok:
-                errors.append(
-                    f"{defect_type}_mismatch"
-                )
-
-        elif defect_type == "neck":
-
-            (
-                geometry_ok,
-                expected_geometry,
-                measured_geometry,
-            ) = validate_neck_width(
-                mask,
-                row,
-            )
-
-            if not geometry_ok:
-                errors.append(
-                    "neck_width_mismatch"
-                )
-
-        elif defect_type == "lean":
-
-            (
-                geometry_ok,
-                expected_geometry,
-                measured_geometry,
-            ) = validate_lean(
-                mask,
-                row,
-            )
-
-            if not geometry_ok:
-                errors.append(
-                    "lean_mismatch"
-                )
-
-        # Height için geometry kontrolü burada yok.
-        # Çünkü yukarıdaki height validation zaten
-        # final yüksekliği kontrol ediyor.
-
-    # --------------------
-    # Final status
-    # --------------------
-
-    status = (
-        "PASS"
-        if len(errors) == 0
-        else "FAIL"
+    expected_geometry = (
+        get_expected_geometry(
+            metadata
+        )
     )
 
+    measured_geometry = None
+
+    # --------------------------------------------------------
+    # Normal
+    # --------------------------------------------------------
+
+    if defect_type == "normal":
+
+        measured_geometry = measurements[
+            "body_width"
+        ]
+
+        if (
+            abs(
+                measured_geometry
+                - expected_geometry
+            )
+            > GEOMETRY_TOLERANCE
+        ):
+            errors.append(
+                "normal_body_mismatch"
+            )
+
+    # --------------------------------------------------------
+    # Bulge
+    # --------------------------------------------------------
+
+    elif defect_type == "bulge":
+
+        measured_geometry = (
+            measure_local_deformation(
+                metadata,
+                measurements,
+            )
+        )
+
+        if (
+            abs(
+                measured_geometry
+                - expected_geometry
+            )
+            > GEOMETRY_TOLERANCE
+        ):
+            errors.append(
+                "bulge_mismatch"
+            )
+
+    # --------------------------------------------------------
+    # Shrink
+    # --------------------------------------------------------
+
+    elif defect_type == "shrink":
+
+        measured_geometry = (
+            measure_local_deformation(
+                metadata,
+                measurements,
+            )
+        )
+
+        if (
+            abs(
+                measured_geometry
+                - expected_geometry
+            )
+            > GEOMETRY_TOLERANCE
+        ):
+            errors.append(
+                "shrink_mismatch"
+            )
+
+    # --------------------------------------------------------
+    # Lean
+    # --------------------------------------------------------
+
+    elif defect_type == "lean":
+
+        measured_geometry = measurements[
+            "lean"
+        ]
+
+        if (
+            abs(
+                measured_geometry
+                - expected_geometry
+            )
+            > GEOMETRY_TOLERANCE
+        ):
+            errors.append(
+                "lean_mismatch"
+            )
+
+    # --------------------------------------------------------
+    # Height
+    # --------------------------------------------------------
+
+    elif defect_type == "height":
+
+        measured_geometry = float(
+            measured_height
+        )
+
+        if (
+            abs(
+                measured_geometry
+                - expected_geometry
+            )
+            > HEIGHT_TOLERANCE
+        ):
+            errors.append(
+                "height_defect_mismatch"
+            )
+
+    # --------------------------------------------------------
+    # Neck
+    # --------------------------------------------------------
+
+    elif defect_type == "neck":
+
+        measured_geometry = measurements[
+            "neck_width"
+        ]
+
+        if (
+            abs(
+                measured_geometry
+                - expected_geometry
+            )
+            > GEOMETRY_TOLERANCE
+        ):
+            errors.append(
+                "neck_mismatch"
+            )
+
     return {
-        "filename": filename,
-        "defect_type": defect_type,
-        "status": status,
-        "errors": ", ".join(errors),
+        "filename": metadata[
+            "filename"
+        ],
+        "passed": len(errors) == 0,
+        "errors": ",".join(
+            errors
+        ),
         "expected_height": expected_height,
         "measured_height": measured_height,
         "expected_geometry": expected_geometry,
         "measured_geometry": measured_geometry,
     }
-    
-def main() -> None:
 
-    if not METADATA_PATH.exists():
-        raise FileNotFoundError(
-            f"Metadata not found: {METADATA_PATH}"
-        )
 
-    metadata = pd.read_csv(
-        METADATA_PATH
+# ============================================================
+# Dataset validation pipeline
+# ============================================================
+
+def validate_dataset(
+    data_dir: Path = DEFAULT_DATA_DIR,
+) -> dict:
+    """
+    Validate a complete generated dataset.
+
+    Returns a dictionary containing the validation
+    summary and individual sample results.
+    """
+
+    data_dir = Path(
+        data_dir
+    )
+
+    metadata_path = (
+        data_dir
+        / "metadata.csv"
+    )
+
+    images_dir = (
+        data_dir
+        / "images"
+    )
+
+    masks_dir = (
+        data_dir
+        / "masks"
+    )
+
+    metadata_rows = load_metadata(
+        metadata_path
     )
 
     print(
-        f"Validating {len(metadata)} samples..."
+        f"Validating "
+        f"{len(metadata_rows)} samples..."
     )
 
     results = []
 
-    for _, row in metadata.iterrows():
+    for row in metadata_rows:
 
-        result = validate_sample(
-            row
-        )
+        try:
+            metadata = (
+                parse_metadata_row(
+                    row
+                )
+            )
+
+            (
+                image_path,
+                mask_path,
+            ) = get_sample_paths(
+                images_dir=images_dir,
+                masks_dir=masks_dir,
+                metadata=metadata,
+            )
+
+            result = validate_sample(
+                metadata=metadata,
+                image_path=image_path,
+                mask_path=mask_path,
+            )
+
+        except (
+            ValueError,
+            RuntimeError,
+        ) as error:
+
+            result = {
+                "filename": row.get(
+                    "filename",
+                    "<unknown>",
+                ),
+                "passed": False,
+                "errors": (
+                    f"validation_error: "
+                    f"{error}"
+                ),
+                "expected_height": None,
+                "measured_height": None,
+                "expected_geometry": None,
+                "measured_geometry": None,
+            }
 
         results.append(
             result
         )
 
-    results_df = pd.DataFrame(
+    passed_results = [
+        result
+        for result in results
+        if result["passed"]
+    ]
+
+    failed_results = [
+        result
+        for result in results
+        if not result["passed"]
+    ]
+
+    total = len(
         results
     )
 
-    pass_count = (
-        results_df["status"]
-        == "PASS"
-    ).sum()
+    passed = len(
+        passed_results
+    )
 
-    fail_count = (
-        results_df["status"]
-        == "FAIL"
-    ).sum()
+    failed = len(
+        failed_results
+    )
+
+    return {
+        "data_dir": data_dir,
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "success": failed == 0,
+        "results": results,
+        "failed_results": failed_results,
+    }
+
+
+# ============================================================
+# Console reporting
+# ============================================================
+
+def print_validation_summary(
+    summary: dict,
+) -> None:
+    """
+    Print a human-readable validation summary.
+    """
 
     print()
-    print("Validation completed.")
-    print("---------------------")
+
     print(
-        f"Total: {len(results_df)}"
-    )
-    print(
-        f"PASS:  {pass_count}"
-    )
-    print(
-        f"FAIL:  {fail_count}"
+        "Validation completed."
     )
 
-    failed_samples = results_df[
-        results_df["status"] == "FAIL"
-    ]
+    print(
+        "---------------------"
+    )
 
-    if not failed_samples.empty:
+    print(
+        f"Total: {summary['total']}"
+    )
+
+    print(
+        f"PASS:  {summary['passed']}"
+    )
+
+    print(
+        f"FAIL:  {summary['failed']}"
+    )
+
+    if summary[
+        "failed_results"
+    ]:
 
         print()
-        print("Failed samples:")
         print(
-            failed_samples[
-                [
-                    "filename",
-                    "errors",
-                    "expected_height",
-                    "measured_height",
-                    "expected_geometry",
-                    "measured_geometry",
-                ]
-            ].to_string(
-                index=False
-            )
+            "Failed samples:"
         )
+
+        for result in summary[
+            "failed_results"
+        ]:
+
+            print()
+
+            print(
+                f"  File: "
+                f"{result['filename']}"
+            )
+
+            print(
+                f"  Errors: "
+                f"{result['errors']}"
+            )
+
+            print(
+                f"  Expected height: "
+                f"{result['expected_height']}"
+            )
+
+            print(
+                f"  Measured height: "
+                f"{result['measured_height']}"
+            )
+
+            print(
+                f"  Expected geometry: "
+                f"{result['expected_geometry']}"
+            )
+
+            print(
+                f"  Measured geometry: "
+                f"{result['measured_geometry']}"
+            )
+
+
+# ============================================================
+# Command-line interface
+# ============================================================
+
+def parse_arguments() -> argparse.Namespace:
+    """
+    Parse command-line arguments.
+    """
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate a synthetic glass bottle "
+            "inspection dataset."
+        ),
+    )
+
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=DEFAULT_DATA_DIR,
+        help=(
+            "Dataset directory containing "
+            "images, masks and metadata.csv. "
+            f"Default: {DEFAULT_DATA_DIR}"
+        ),
+    )
+
+    return parser.parse_args()
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main() -> None:
+    """
+    CLI entry point.
+
+    Exit code:
+        0 -> all samples passed validation
+        1 -> one or more samples failed validation
+    """
+
+    args = parse_arguments()
+
+    try:
+        summary = validate_dataset(
+            data_dir=args.data_dir
+        )
+
+    except (
+        FileNotFoundError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+
+        print(
+            f"Validation failed: {error}",
+            file=sys.stderr,
+        )
+
+        raise SystemExit(
+            1
+        ) from error
+
+    print_validation_summary(
+        summary
+    )
+
+    if not summary[
+        "success"
+    ]:
+        raise SystemExit(
+            1
+        )
+
 
 if __name__ == "__main__":
     main()
