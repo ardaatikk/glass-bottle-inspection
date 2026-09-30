@@ -1,6 +1,7 @@
 import argparse
 import csv
 from pathlib import Path
+import shutil
 
 import cv2
 import numpy as np
@@ -54,6 +55,47 @@ METADATA_FIELDNAMES = (
 # ============================================================
 # Directory management
 # ============================================================
+
+def clean_output_directory(
+    output_dir: Path,
+) -> None:
+    """
+    Remove previously generated dataset artifacts.
+
+    Only generator-managed paths are removed.
+    The output directory itself is preserved.
+    """
+
+    output_dir = Path(
+        output_dir
+    )
+
+    images_dir = (
+        output_dir
+        / "images"
+    )
+
+    masks_dir = (
+        output_dir
+        / "masks"
+    )
+
+    metadata_path = (
+        output_dir
+        / "metadata.csv"
+    )
+
+    for directory in (
+        images_dir,
+        masks_dir,
+    ):
+        if directory.exists():
+            shutil.rmtree(
+                directory
+            )
+
+    if metadata_path.exists():
+        metadata_path.unlink()
 
 def create_directories(
     images_dir: Path,
@@ -880,6 +922,10 @@ def generate_dataset(
         / "metadata.csv"
     )
 
+    clean_output_directory(
+        output_dir
+    )
+    
     create_directories(
         images_dir=images_dir,
         masks_dir=masks_dir,
