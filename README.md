@@ -1,5 +1,11 @@
 # Glass Bottle Inspection
 
+[![Tests](https://github.com/ardaatikk/glass-bottle-inspection/actions/workflows/tests.yml/badge.svg)](https://github.com/ardaatikk/glass-bottle-inspection/actions/workflows/tests.yml)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+An explainable computer vision pipeline...
+
 An explainable computer vision pipeline for detecting geometric defects in glass bottles using silhouette analysis, statistical reference modeling, scale-normalized geometry, and local width-profile comparison.
 
 > **Project status:** The current pipeline has been developed and evaluated on a controlled synthetic dataset of 600 bottle images. Real-world calibration and robustness testing are planned once representative production images become available.
