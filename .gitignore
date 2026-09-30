@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+environment/
+
+# macOS
+.DS_Store
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Generated outputs
+outputs/
+
+# Generated synthetic dataset
+data/images/
+data/masks/
+data/metadata.csv
+
+# Temporary files
+*.tmp
+*.log
