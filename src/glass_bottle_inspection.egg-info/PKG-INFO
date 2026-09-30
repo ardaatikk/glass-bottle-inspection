@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: glass-bottle-inspection
+Version: 0.1.0
+Summary: Explainable computer vision pipeline for geometric glass bottle defect inspection.
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: opencv-python

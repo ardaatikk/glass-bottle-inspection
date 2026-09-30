@@ -1,0 +1,10 @@
+pyproject.toml
+src/bottle_inspection/__init__.py
+src/bottle_inspection/detection.py
+src/bottle_inspection/inspection.py
+src/bottle_inspection/reference.py
+src/glass_bottle_inspection.egg-info/PKG-INFO
+src/glass_bottle_inspection.egg-info/SOURCES.txt
+src/glass_bottle_inspection.egg-info/dependency_links.txt
+src/glass_bottle_inspection.egg-info/requires.txt
+src/glass_bottle_inspection.egg-info/top_level.txt

@@ -4,11 +4,19 @@ from pathlib import Path
 
 import numpy as np
 
-from inspection import (
+from bottle_inspection.inspection import (
     SUPPORTED_IMAGE_EXTENSIONS,
     inspect_image,
 )
 
+from bottle_inspection.inspection import (
+    SUPPORTED_IMAGE_EXTENSIONS,
+    inspect_image,
+)
+
+from bottle_inspection.reference import (
+    interpolate_width_profile,
+)
 
 # ============================================================
 # Configuration
@@ -86,38 +94,6 @@ def create_profile_grid(
         points,
         dtype=np.float64,
     )
-
-
-def interpolate_width_profile(
-    normalized_y: np.ndarray,
-    width_profile: np.ndarray,
-    profile_grid: np.ndarray,
-) -> np.ndarray:
-    """
-    Interpolate a bottle width profile onto the
-    common normalized reference grid.
-
-    This allows bottles with slightly different
-    pixel heights to be compared row-by-row.
-    """
-
-    if len(normalized_y) != len(width_profile):
-        raise ValueError(
-            "Normalized coordinates and width profile "
-            "must have the same length."
-        )
-
-    if len(normalized_y) < 2:
-        raise ValueError(
-            "Width profile contains too few points."
-        )
-
-    return np.interp(
-        profile_grid,
-        normalized_y,
-        width_profile,
-    )
-
 
 # ============================================================
 # Statistics
