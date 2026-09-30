@@ -670,6 +670,40 @@ def measure_bottle(
         bounds["bottom"],
     )
 
+    height = float(
+        bounds["height"]
+    )
+
+    if height <= 0:
+        raise RuntimeError(
+            "Bottle height must be positive."
+        )
+
+    bounding_width_ratio = (
+        float(bounds["width"])
+        / height
+    )
+
+    body_width_ratio = (
+        body_width
+        / height
+    )
+
+    neck_width_ratio = (
+        neck_width
+        / height
+    )
+
+    lean_ratio = (
+        lean
+        / height
+    )
+
+    normalized_width_profile = (
+        width_profile
+        / height
+    )
+
     normalized_width_y = (
         normalize_vertical_coordinates(
             width_y_values,
@@ -695,10 +729,16 @@ def measure_bottle(
         "body_width": body_width,
         "neck_width": neck_width,
         "lean": lean,
+        
+        "bounding_width_ratio": bounding_width_ratio,
+        "body_width_ratio": body_width_ratio,
+        "neck_width_ratio": neck_width_ratio,
+        "lean_ratio": lean_ratio,
 
         "width_y_values": width_y_values,
         "normalized_width_y": normalized_width_y,
         "width_profile": width_profile,
+        "normalized_width_profile": normalized_width_profile,
 
         "center_y_values": center_y_values,
         "normalized_center_y": normalized_center_y,

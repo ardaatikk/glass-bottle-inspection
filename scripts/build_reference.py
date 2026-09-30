@@ -160,7 +160,13 @@ def build_reference(
     neck_widths = []
     leans = []
 
+    bounding_width_ratios = []
+    body_width_ratios = []
+    neck_width_ratios = []
+    lean_ratios = []
+
     interpolated_profiles = []
+    normalized_interpolated_profiles = []
 
     failed_images = []
 
@@ -199,6 +205,22 @@ def build_reference(
             leans.append(
                 measurements["lean"]
             )
+            
+            bounding_width_ratios.append(
+                measurements["bounding_width_ratio"]
+            )
+
+            body_width_ratios.append(
+                measurements["body_width_ratio"]
+            )
+
+            neck_width_ratios.append(
+                measurements["neck_width_ratio"]
+            )
+
+            lean_ratios.append(
+                measurements["lean_ratio"]
+            )
 
             profile = interpolate_width_profile(
                 normalized_y=measurements[
@@ -212,6 +234,22 @@ def build_reference(
 
             interpolated_profiles.append(
                 profile
+            )
+            
+            normalized_profile = (
+                interpolate_width_profile(
+                    normalized_y=measurements[
+                        "normalized_width_y"
+                    ],
+                    width_profile=measurements[
+                        "normalized_width_profile"
+                    ],
+                    profile_grid=profile_grid,
+                )
+            )
+
+            normalized_interpolated_profiles.append(
+                normalized_profile
             )
 
         except (
@@ -240,6 +278,10 @@ def build_reference(
     profile_matrix = np.vstack(
         interpolated_profiles
     )
+    
+    normalized_profile_matrix = np.vstack(
+        normalized_interpolated_profiles
+    )
 
     profile_mean = np.mean(
         profile_matrix,
@@ -259,6 +301,27 @@ def build_reference(
 
     profile_max = np.max(
         profile_matrix,
+        axis=0,
+    )
+
+    normalized_profile_mean = np.mean(
+        normalized_profile_matrix,
+        axis=0,
+    )
+
+    normalized_profile_std = np.std(
+        normalized_profile_matrix,
+        axis=0,
+        ddof=0,
+    )
+
+    normalized_profile_min = np.min(
+        normalized_profile_matrix,
+        axis=0,
+    )
+
+    normalized_profile_max = np.max(
+        normalized_profile_matrix,
         axis=0,
     )
 
@@ -295,6 +358,29 @@ def build_reference(
                 np.asarray(leans)
             ),
         },
+        
+        "normalized_measurements": {
+            "bounding_width_ratio": calculate_statistics(
+                np.asarray(
+                    bounding_width_ratios
+                )
+            ),
+            "body_width_ratio": calculate_statistics(
+                np.asarray(
+                    body_width_ratios
+                )
+            ),
+            "neck_width_ratio": calculate_statistics(
+                np.asarray(
+                    neck_width_ratios
+                )
+            ),
+            "lean_ratio": calculate_statistics(
+                np.asarray(
+                    lean_ratios
+                )
+            ),
+        },
 
         "width_profile": {
             "normalized_y": (
@@ -311,6 +397,24 @@ def build_reference(
             ),
             "max": (
                 profile_max.tolist()
+            ),
+        },
+
+        "normalized_width_profile": {
+            "normalized_y": (
+                profile_grid.tolist()
+            ),
+            "mean": (
+                normalized_profile_mean.tolist()
+            ),
+            "std": (
+                normalized_profile_std.tolist()
+            ),
+            "min": (
+                normalized_profile_min.tolist()
+            ),
+            "max": (
+                normalized_profile_max.tolist()
             ),
         },
 

@@ -28,9 +28,19 @@ MIN_HEIGHT_TOLERANCE = 5.0
 MIN_BODY_WIDTH_TOLERANCE = 4.0
 MIN_NECK_WIDTH_TOLERANCE = 3.0
 MIN_LEAN_TOLERANCE = 3.0
+MIN_PROFILE_TOLERANCE = 4.0
+
+# Scale-normalized geometry tolerances.
+# Ratios are expressed relative to bottle height.
+MIN_BODY_WIDTH_RATIO_TOLERANCE = 0.006
+MIN_NECK_WIDTH_RATIO_TOLERANCE = 0.004
+MIN_LEAN_RATIO_TOLERANCE = 0.004
+
+# Minimum tolerance for the scale-normalized
+# local width profile.
+MIN_NORMALIZED_PROFILE_TOLERANCE = 0.006
 
 # Local profile analysis.
-MIN_PROFILE_TOLERANCE = 4.0
 PROFILE_STD_FACTOR = 3.0
 
 # Ignore extreme top/bottom points because silhouette
@@ -80,7 +90,9 @@ def load_reference(
 
     required_sections = (
         "measurements",
+        "normalized_measurements",
         "width_profile",
+        "normalized_width_profile",
     )
 
     for section in required_sections:
@@ -216,7 +228,7 @@ def analyze_width_profile(
     """
 
     reference_profile = reference[
-        "width_profile"
+        "normalized_width_profile"
     ]
 
     reference_y = np.asarray(
@@ -260,7 +272,7 @@ def analyze_width_profile(
             ),
             width_profile=np.asarray(
                 measurements[
-                    "width_profile"
+                    "normalized_width_profile"
                 ],
                 dtype=np.float64,
             ),
@@ -276,7 +288,7 @@ def analyze_width_profile(
     tolerance = np.maximum(
         reference_std
         * PROFILE_STD_FACTOR,
-        MIN_PROFILE_TOLERANCE,
+        MIN_NORMALIZED_PROFILE_TOLERANCE,
     )
 
     analysis_region = (
@@ -398,8 +410,15 @@ def classify_defects(
     Convert abnormal geometry measurements into
     human-readable defect labels.
 
-    Multiple defects may be returned because a bottle
-    can violate more than one geometric constraint.
+    Multiple defects may be returned when independent
+    geometric constraints are violated.
+
+    Height anomalies are treated specially because
+    changing bottle height also changes height-normalized
+    width ratios. In that case, secondary width/profile
+    anomalies are suppressed to avoid misclassifying a
+    pure height defect as bulge, shrink, neck, or body-width
+    deformation.
     """
 
     defects = []
@@ -420,68 +439,100 @@ def classify_defects(
         "lean"
     ]
 
-    if height["abnormal"]:
+    # --------------------------------------------------------
+    # Height
+    # --------------------------------------------------------
+
+    height_abnormal = bool(
+        height["abnormal"]
+    )
+
+    if height_abnormal:
+
         if height["deviation"] > 0:
             defects.append(
                 "height_too_tall"
             )
+
         else:
             defects.append(
                 "height_too_short"
             )
 
-    if neck_width["abnormal"]:
-        if neck_width["deviation"] > 0:
-            defects.append(
-                "neck_too_wide"
-            )
-        else:
-            defects.append(
-                "neck_too_narrow"
-            )
+    # --------------------------------------------------------
+    # Lean
+    # --------------------------------------------------------
+    # Lean is independent of height normalization, so it
+    # remains valid even when a height defect is present.
 
     if lean["abnormal"]:
         defects.append(
             "lean"
         )
 
-    if profile_analysis[
-        "positive_detected"
-    ]:
-        defects.append(
-            "bulge"
-        )
+    # --------------------------------------------------------
+    # Width-related defects
+    # --------------------------------------------------------
+    # A height change alters width / height ratios even when
+    # the physical bottle width itself has not changed.
+    #
+    # Therefore, when height is already abnormal, normalized
+    # neck/body/profile anomalies are treated as secondary
+    # effects and are not promoted to defect labels.
 
-    if profile_analysis[
-        "negative_detected"
-    ]:
-        defects.append(
-            "shrink"
-        )
+    if not height_abnormal:
 
-    # Body width is kept as a global diagnostic.
-    # If it is abnormal but no local profile defect was
-    # detected, expose the global width anomaly explicitly.
-    if (
-        body_width["abnormal"]
-        and not profile_analysis[
+        if neck_width["abnormal"]:
+
+            if neck_width["deviation"] > 0:
+                defects.append(
+                    "neck_too_wide"
+                )
+
+            else:
+                defects.append(
+                    "neck_too_narrow"
+                )
+
+        if profile_analysis[
             "positive_detected"
-        ]
-        and not profile_analysis[
+        ]:
+            defects.append(
+                "bulge"
+            )
+
+        if profile_analysis[
             "negative_detected"
-        ]
-    ):
-        if body_width["deviation"] > 0:
+        ]:
             defects.append(
-                "body_too_wide"
+                "shrink"
             )
-        else:
-            defects.append(
-                "body_too_narrow"
-            )
+
+        # Body width is kept as a global diagnostic.
+        # If it is abnormal but no local profile defect was
+        # detected, expose the global width anomaly explicitly.
+
+        if (
+            body_width["abnormal"]
+            and not profile_analysis[
+                "positive_detected"
+            ]
+            and not profile_analysis[
+                "negative_detected"
+            ]
+        ):
+
+            if body_width["deviation"] > 0:
+                defects.append(
+                    "body_too_wide"
+                )
+
+            else:
+                defects.append(
+                    "body_too_narrow"
+                )
 
     return defects
-
 
 # ============================================================
 # Detection pipeline
@@ -519,6 +570,10 @@ def detect_defects(
         "measurements"
     ]
 
+    normalized_reference_measurements = reference[
+        "normalized_measurements"
+    ]
+
     comparisons = {
         "height": compare_measurement(
             value=measurements[
@@ -533,35 +588,35 @@ def detect_defects(
 
         "body_width": compare_measurement(
             value=measurements[
-                "body_width"
+                "body_width_ratio"
             ],
-            statistics=reference_measurements[
-                "body_width"
+            statistics=normalized_reference_measurements[
+                "body_width_ratio"
             ],
             std_factor=BODY_WIDTH_STD_FACTOR,
-            minimum_tolerance=MIN_BODY_WIDTH_TOLERANCE,
+            minimum_tolerance=MIN_BODY_WIDTH_RATIO_TOLERANCE,
         ),
 
         "neck_width": compare_measurement(
             value=measurements[
-                "neck_width"
+                "neck_width_ratio"
             ],
-            statistics=reference_measurements[
-                "neck_width"
+            statistics=normalized_reference_measurements[
+                "neck_width_ratio"
             ],
             std_factor=NECK_WIDTH_STD_FACTOR,
-            minimum_tolerance=MIN_NECK_WIDTH_TOLERANCE,
+            minimum_tolerance=MIN_NECK_WIDTH_RATIO_TOLERANCE,
         ),
 
         "lean": compare_measurement(
             value=measurements[
-                "lean"
+                "lean_ratio"
             ],
-            statistics=reference_measurements[
-                "lean"
+            statistics=normalized_reference_measurements[
+                "lean_ratio"
             ],
             std_factor=1.0,
-            minimum_tolerance=MIN_LEAN_TOLERANCE,
+            minimum_tolerance=MIN_LEAN_RATIO_TOLERANCE,
         ),
     }
 
@@ -608,6 +663,26 @@ def detect_defects(
             ),
             "lean": float(
                 measurements["lean"]
+            ),
+            "bounding_width_ratio": float(
+                measurements[
+                    "bounding_width_ratio"
+                ]
+            ),
+            "body_width_ratio": float(
+                measurements[
+                    "body_width_ratio"
+                ]
+            ),
+            "neck_width_ratio": float(
+                measurements[
+                    "neck_width_ratio"
+                ]
+            ),
+            "lean_ratio": float(
+                measurements[
+                    "lean_ratio"
+                ]
             ),
         },
         "comparisons": comparisons,
@@ -706,7 +781,7 @@ def print_detection_result(
 
     print(
         f"Maximum deviation: "
-        f"{profile['maximum_deviation']:+.2f} px"
+        f"{profile['maximum_deviation']:+.4f}"
     )
 
     print(

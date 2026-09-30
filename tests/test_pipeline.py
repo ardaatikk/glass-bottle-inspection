@@ -149,6 +149,11 @@ def create_reference(
         measurements["width_profile"],
         dtype=np.float64,
     )
+    
+    normalized_width_profile = np.asarray(
+        measurements["normalized_width_profile"],
+        dtype=np.float64,
+    )
 
     profile_grid = np.linspace(
         0.0,
@@ -160,6 +165,12 @@ def create_reference(
         profile_grid,
         normalized_y,
         width_profile,
+    )
+
+    normalized_mean_profile = np.interp(
+        profile_grid,
+        normalized_y,
+        normalized_width_profile,
     )
 
     def measurement_statistics(
@@ -192,11 +203,37 @@ def create_reference(
                 measurements["lean"]
             ),
         },
+        
+        "normalized_measurements": {
+            "bounding_width_ratio": measurement_statistics(
+                measurements["bounding_width_ratio"]
+            ),
+            "body_width_ratio": measurement_statistics(
+                measurements["body_width_ratio"]
+            ),
+            "neck_width_ratio": measurement_statistics(
+                measurements["neck_width_ratio"]
+            ),
+            "lean_ratio": measurement_statistics(
+                measurements["lean_ratio"]
+            ),
+        },
+
         "width_profile": {
             "normalized_y": (
                 profile_grid.tolist()
             ),
             "mean": mean_profile.tolist(),
+            "std": np.zeros(
+                PROFILE_POINTS
+            ).tolist(),
+        },
+        
+        "normalized_width_profile": {
+            "normalized_y": (
+                profile_grid.tolist()
+            ),
+            "mean": normalized_mean_profile.tolist(),
             "std": np.zeros(
                 PROFILE_POINTS
             ).tolist(),
